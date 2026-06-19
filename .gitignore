@@ -1,0 +1,50 @@
+# Python — compiled files and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Packaging / distribution
+build/
+dist/
+downloads/
+wheels/
+sdist/
+var/
+
+# Index / database build artifacts (outputs, can be huge — never commit)
+*.npy
+*.bloom
+shard_*.bin
+*.u8
+*.i8
+*.i64
+keys.bin
+
+# Test & coverage tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

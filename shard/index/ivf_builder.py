@@ -1,4 +1,8 @@
 """
+DEPRECATED — superseded by shard.index.ivfpq_builder (build_ivfpq).
+This prototype loaded all embeddings into RAM (np.load) and produced an index
+the old ivf_reader could not read correctly. Kept only for reference; do not use.
+
 IVF Builder — Offline Inverted File Index para embeddings en TB scale.
 
 Uso:

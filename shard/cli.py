@@ -89,6 +89,34 @@ def cmd_search(args) -> None:
         print(f"{score:.4f}  {key}")
 
 
+def cmd_build_ivf(args) -> None:
+    import numpy as np
+    from shard.index.ivfpq_builder import build_ivfpq
+
+    vectors = np.load(args.embeddings, mmap_mode="r")          # never fully loaded
+    with open(args.keys, encoding="utf-8") as f:
+        raw = json.load(f)
+    keys = raw if isinstance(raw, list) else [raw[str(i)] for i in range(len(raw))]
+    if len(keys) != len(vectors):
+        print(f"Error: keys ({len(keys)}) != embeddings ({len(vectors)})", file=sys.stderr)
+        sys.exit(1)
+    build_ivfpq(vectors, keys, args.out, profile=args.profile, rerank=args.rerank, seed=args.seed)
+
+
+def cmd_search_ivf(args) -> None:
+    import numpy as np
+    from shard.index.ivfpq_reader import IVFPQReader
+
+    q = np.load(args.query_vec).astype(np.float32).reshape(-1)  # precomputed query vector
+    reader = IVFPQReader(args.ivf)
+    results = reader.search(q, top_k=args.top_k, nprobe=args.nprobe)
+    if not results:
+        print("No results found.")
+        return
+    for key, score in results:
+        print(f"{score:.4f}  {key}")
+
+
 def cmd_stats(args) -> None:
     db_path = Path(args.db)
     meta_path = db_path / "index.meta.json"
@@ -143,6 +171,23 @@ def main() -> None:
     p_search.add_argument("--query", required=True, metavar="TEXT", help="Query text")
     p_search.add_argument("--top-k", type=int, default=5, dest="top_k", metavar="K", help="Number of results (default: 5)")
 
+    # ── build-ivf ────────────────────────────────────────────────────────────--
+    p_bivf = sub.add_parser("build-ivf", help="Build an IVF-PQ vector index (offline)")
+    p_bivf.add_argument("--embeddings", required=True, metavar="NPY", help="embeddings.npy (N,dim) L2-normalized")
+    p_bivf.add_argument("--keys", required=True, metavar="JSON", help="JSON list of N keys (or {idx:key} map)")
+    p_bivf.add_argument("--out", required=True, metavar="DIR", help="output ivf/ directory")
+    p_bivf.add_argument("--profile", default="low-ram", choices=["low-ram", "medium", "fast"])
+    p_bivf.add_argument("--rerank", default="auto", choices=["auto", "none", "sq8", "f32"])
+    p_bivf.add_argument("--seed", type=int, default=0)
+
+    # ── search-ivf ───────────────────────────────────────────────────────────--
+    p_sivf = sub.add_parser("search-ivf", help="Vector search over an IVF-PQ index")
+    p_sivf.add_argument("--ivf", required=True, metavar="DIR", help="ivf/ index directory")
+    p_sivf.add_argument("--query-vec", required=True, dest="query_vec", metavar="NPY",
+                        help="precomputed query vector (.npy, shape (dim,))")
+    p_sivf.add_argument("--top-k", type=int, default=5, dest="top_k", metavar="K")
+    p_sivf.add_argument("--nprobe", type=int, default=None, metavar="N", help="lists to probe (default: profile)")
+
     # ── stats ──────────────────────────────────────────────────────────────────
     p_stats = sub.add_parser("stats", help="Show database statistics")
     p_stats.add_argument("--db", required=True, metavar="DIR", help="SHARD database directory")
@@ -155,6 +200,10 @@ def main() -> None:
         cmd_query(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "build-ivf":
+        cmd_build_ivf(args)
+    elif args.command == "search-ivf":
+        cmd_search_ivf(args)
     elif args.command == "stats":
         cmd_stats(args)
     else:

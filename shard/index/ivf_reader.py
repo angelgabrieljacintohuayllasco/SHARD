@@ -1,4 +1,8 @@
 """
+DEPRECATED — superseded by shard.index.ivfpq_reader (IVFPQReader).
+This prototype had broken mmap reshape (read the .npy header as data, never
+reshaped to (n,dim)), wrong int8 dequant, and nprobe=1. Use IVFPQReader instead.
+
 IVF Reader — Lazy IVF para query-time en low-RAM.
 
 Carga:
