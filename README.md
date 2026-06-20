@@ -8,7 +8,12 @@
 
 SHARD is a purpose-built binary database engine for massive, read-heavy datasets on resource-constrained hardware. It replaces JSON files, SQLite, and vector databases for use cases where you need to store millions or billions of records and query them instantly — without loading the full dataset into RAM.
 
-Designed as the native storage backend for **[DASA](https://github.com/YOUR_ORG/dasa)**.
+Designed as the native storage backend for **[DASA](https://github.com/angelgabrieljacintohuayllasco/DASA)**.
+
+Beyond exact-key lookup, SHARD now ships a **numpy-only IVF-PQ vector index** for
+approximate nearest-neighbor search — fast semantic search over hundreds of
+millions of embeddings while keeping query RAM in the hundreds of MB. No FAISS,
+no server, mmap-backed, scales toward 1 TB on low-RAM hardware.
 
 ---
 
@@ -20,7 +25,7 @@ Designed as the native storage backend for **[DASA](https://github.com/YOUR_ORG/
 | SQLite | Needs 500 MB+ overhead | OK for exact match |
 | Vector DB (Qdrant, Weaviate) | Requires separate server | Fast, but heavy |
 | PostgreSQL | 200+ MB RAM overhead | Fast, needs server |
-| **SHARD** | **✓ Works natively** | O(1) shard + O(k) scan |
+| **SHARD** | **✓ Works natively** | O(1) key lookup + IVF-PQ vector search |
 
 ---
 
@@ -98,6 +103,53 @@ for key, score in results:
 
 ---
 
+## Vector search (IVF-PQ)
+
+For semantic search over embeddings, build an **IVF-PQ index**: IVF (coarse
+k-means) jumps straight to the few relevant clusters — like a database index
+jumps to a row — and PQ (product quantization on residuals) compresses each
+vector ~32× so the index is mmap-backed and tiny in RAM.
+
+**Build is offline** (run it on a powerful machine / Colab), then copy the
+read-only `ivf/` artifact to a low-RAM device for query. The corpus is never
+re-embedded on the query device.
+
+```bash
+# embeddings.npy: (N, dim) float32, L2-normalized;  keys.json: list of N keys
+python -m shard.cli build-ivf --embeddings emb.npy --keys keys.json \
+    --out ./mydb/ivf --profile low-ram        # low-ram | medium | fast
+
+# query with a precomputed query vector (.npy, shape (dim,))
+python -m shard.cli search-ivf --ivf ./mydb/ivf --query-vec q.npy --top-k 5
+```
+
+```python
+from shard.index.ivfpq_builder import build_ivfpq
+from shard.index.ivfpq_reader import IVFPQReader
+import numpy as np
+
+# build (offline): vectors may be an np.memmap — never fully loaded into RAM
+build_ivfpq(vectors, keys, "./mydb/ivf", profile="low-ram")
+
+# query (low-RAM device): only centroids + codebooks + probed lists touch RAM
+reader = IVFPQReader("./mydb/ivf")
+for key, score in reader.search(query_vec, top_k=5):
+    print(f"{score:.4f}  {key}")
+```
+
+**Profiles** trade recall, index size and speed. PQ alone ranks near-ties
+poorly, so each profile keeps a disk-backed rerank cache (`sq8` int8 or `f32`)
+that re-scores only the shortlist — high recall without breaking the low-RAM
+budget.
+
+| Profile | PQ bytes/vec | rerank cache | use when |
+|---|---|---|---|
+| `low-ram` | 48 | sq8 (384 B/vec) | smallest RAM, runs on 2 GB |
+| `medium`  | 32 | sq8 (384 B/vec) | balanced |
+| `fast`    | 16 | f32 (1536 B/vec) | highest recall, small/mid N |
+
+---
+
 ## Input Format
 
 SHARD accepts any JSON array:
@@ -126,10 +178,13 @@ shard/
 │   ├── shard_writer.py    # Streaming writer — builds .bin shards + .bloom files
 │   └── mmap_reader.py     # Memory-mapped reader — O(1) shard + linear scan
 ├── index/
+│   ├── ivfpq_format.py    # IVF-PQ profiles, params, portable manifest I/O
+│   ├── ivfpq_builder.py   # IVF-PQ streaming build (numpy + MiniBatchKMeans)
+│   ├── ivfpq_reader.py    # IVF-PQ query — mmap, ADC, sq8/f32 rerank
 │   ├── index_builder.py   # Builds MinHash similarity index
 │   ├── index_reader.py    # Queries the index for nearest-neighbor search
-│   ├── ivf_builder.py     # Offline IVF index builder for embedding-based search
-│   ├── ivf_reader.py      # Lazy IVF reader — low-RAM embedding search
+│   ├── ivf_builder.py     # DEPRECATED — superseded by ivfpq_builder
+│   ├── ivf_reader.py      # DEPRECATED — superseded by ivfpq_reader
 │   ├── tfidf_writer.py    # Builds TF-IDF posting lists (keyword search)
 │   └── tfidf_reader.py    # BM25 keyword search over TF-IDF index
 └── cli.py                 # Command-line interface
@@ -172,14 +227,19 @@ See [docs/format-spec.md](docs/format-spec.md) for full specification.
 
 ## Capacity Guidelines
 
-| Dataset size | Recommended shards | RAM for Bloom filters | RAM for MinHash index |
-|---|---|---|---|
-| 10k records | 16 | ~1 MB | ~6 MB |
-| 1M records | 1 000 | ~12 MB | ~512 MB |
-| 100M records | 10 000 | ~1.2 GB | ~50 GB* |
-| 1B records | 100 000 | ~12 GB* | Not recommended |
+| Dataset size | Recommended shards | RAM for Bloom filters | RAM for MinHash index | RAM for IVF-PQ query |
+|---|---|---|---|---|
+| 10k records | 16 | ~1 MB | ~6 MB | ~5 MB |
+| 1M records | 1 000 | ~12 MB | ~512 MB | ~10 MB |
+| 100M records | 10 000 | ~1.2 GB | ~50 GB* | ~110 MB |
+| 1B records | 100 000 | ~12 GB* | Not recommended | ~410 MB |
 
 *At very large scales, use multiple SHARD nodes without building the full in-RAM index.
+
+**IVF-PQ query RAM** counts only the resident centroids + codebooks + currently
+probed lists — the PQ codes and rerank cache stay on disk (mmap), so even a 1 B
+index queries within a few hundred MB. This is the path for semantic search at
+scale; the MinHash in-RAM index does not scale past ~10M.
 
 ---
 
